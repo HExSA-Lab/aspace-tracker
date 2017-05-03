@@ -17,9 +17,9 @@ pt_scan.o: pt_scan.c pt_scan.h
 	$(CC) $(MCFLAGS) -static -c pt_scan.c
 
 kzpage.ko: kzpage.c
-	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) modules
 
 clean: 
 	rm -f *.o *.ko $(OBJS)
-	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) clean
 
