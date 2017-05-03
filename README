@@ -1,0 +1,10 @@
+This tool is used to detect write-after-read patterns for the 
+zero page in linux. It will take a PID as its argument, and
+will detect all zero pages in the process, and will delegate
+a kernel module to track those zero pages. 
+
+New memory allocations will also be tracked.
+
+The idea here is that we get a time delta between when the zero
+page was handed to the process and when the process actually wrote
+to the page causing a promotion to a real physical page.
