@@ -1,7 +1,7 @@
 CC:=gcc
 AR:=ar
 MCFLAGS:=-Wall -O2
-OBJS:=zpage
+OBJS:=zpage test
 
 all: kzpage.ko zpage 
 
@@ -15,6 +15,9 @@ libpt_scan.a: pt_scan.o
 
 pt_scan.o: pt_scan.c pt_scan.h
 	$(CC) $(MCFLAGS) -static -c pt_scan.c
+
+test: test.c
+	$(CC) $(MCFLAGS) test.c
 
 kzpage.ko: kzpage.c
 	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) modules
