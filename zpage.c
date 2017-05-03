@@ -111,6 +111,46 @@ cleanup_msg (struct msghdr * msg)
 }
 
 
+static int 
+find_all_zpages (int pid)
+{
+    uint64_t npages = 0;
+    uint64_t zeros = 0;
+    struct page_info *pi = NULL;
+
+    if (pt_scan_get_page_infos_all_maps(pid, NULL, &npages)) {
+        fprintf(stderr, "Failed to get number of pages\n");
+        return -1;
+    }
+
+    pi = (struct page_info*)malloc(sizeof(struct page_info)*npages);
+    if (!pi) {
+        fprintf(stderr, "Could not allocate page info array\n");
+        return -1;
+    }
+    memset(pi, 0, sizeof(struct page_info)*npages);
+
+    if (pt_scan_get_page_infos_all_maps(pid, pi, &npages)) {
+        fprintf(stderr, "Could not get pages\n");
+        free(pi);
+        return -1;
+    }
+
+    printf("Successfully scanned pages\n");
+
+    for (int i = 0; i < npages; i++) {
+        if (pi[i].flags.flags.ZERO_PAGE == 1) {
+            zeros++;
+        }
+    }
+
+
+    printf("Found %lu zero page references (%d scanned)\n", zeros, npages);
+
+    return 0;
+}
+
+
 int 
 main (int argc, char * argv[])
 {
@@ -162,11 +202,11 @@ main (int argc, char * argv[])
 
     pid = atoi(argv[1]);
 
+    printf("Starting zpage daemon (tracking pid %d)\n", pid);
+
+    find_all_zpages(pid);
 
     cleanup_msg(m);
-    printf("Starting zpage daemon\n");
-
-
 
     return 0;
 }

@@ -6,7 +6,7 @@ OBJS:=zpage
 all: kzpage.ko zpage 
 
 zpage: zpage.c libpt_scan.a
-	$(CC) $(MCFLAGS) -L. -lpt_scan -o $@ $<
+	$(CC) $(MCFLAGS) -L. -lpt_scan -o $@ $< -lpt_scan
 
 obj-m+=kzpage.o
 

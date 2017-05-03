@@ -92,7 +92,6 @@ kzpage_init (void)
         return -10;
     }
 
-
     return 0;
 }
 
@@ -103,8 +102,6 @@ kzpage_exit (void)
     INFO("kzpage module exiting.\n");
     netlink_kernel_release(nl_sk);
 }
-
-
 
 module_init(kzpage_init);
 module_exit(kzpage_exit);
