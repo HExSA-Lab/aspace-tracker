@@ -290,6 +290,35 @@ trace (int pid)
 }
 
 
+static void
+check_for_kmod (void)
+{
+    char buf[256];
+    char fbuf[16];
+    FILE *fd = NULL;
+
+    memset(buf, 0, 256);
+    sprintf(buf, "lsmod | grep %s", KMOD_NAME);
+
+    fd = popen(buf, "r");
+
+    if (!fd) {
+        fprintf(stderr, "Couldn't check for module presence\n");
+        exit(1);
+    }
+
+
+    if (fread(fbuf, 1, sizeof(fbuf), fd) > 0) { // we have a module
+        DEBUG_PRINT("kzpage module detected\n");
+        return;
+    }
+
+    fprintf(stderr, "kzpage module is not loaded, make sure to insert it\n");
+    exit(1);
+
+}
+
+
 int 
 main (int argc, char * argv[])
 {
@@ -306,6 +335,8 @@ main (int argc, char * argv[])
         usage(argv);
     }
 
+    /* make sure the kern module is loaded */
+    check_for_kmod();
 
     memset(&src_addr, 0, sizeof(src_addr));
     src_addr.nl_family = AF_NETLINK;
