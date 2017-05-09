@@ -1,20 +1,20 @@
 CC:=gcc
 AR:=ar
 MCFLAGS:=-Wall -O2
-OBJS:=zpage test
+OBJS:=ztrace test
 
-all: kzpage.ko zpage 
+all: kztrace.ko ztrace 
 
-zpage.o: zpage.c
+ztrace.o: ztrace.c
 	$(CC) $(MCFLAGS) -o $@ -c $<
 
 hashtable.o: hashtable.c hashtable.h
 	$(CC) $(MCFLAGS) -o $@ -c $<
 
-zpage: zpage.o hashtable.o libpt_scan.a 
-	$(CC) -L. -lpt_scan -o $@ zpage.o hashtable.o -lpt_scan
+ztrace: ztrace.o hashtable.o libpt_scan.a 
+	$(CC) -L. -lpt_scan -o $@ ztrace.o hashtable.o -lpt_scan
 
-obj-m+=kzpage.o
+obj-m+=kztrace.o
 
 libpt_scan.a: pt_scan.o
 	$(AR) rv libpt_scan.a pt_scan.o
@@ -23,9 +23,9 @@ pt_scan.o: pt_scan.c pt_scan.h
 	$(CC) $(MCFLAGS) -static -c pt_scan.c
 
 test: test.c
-	$(CC) -Wall -o $@ $<
+	$(CC) -Wno-unused-but-set-variable -Wall -o $@ $<
 
-kzpage.ko: kzpage.c
+kztrace.ko: kztrace.c
 	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) modules
 
 clean: 
