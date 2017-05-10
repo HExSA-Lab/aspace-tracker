@@ -25,9 +25,9 @@
 #include "pt_scan.h"
 #include "hashtable.h"
 
-#define VERSION "0.0.1"
 
 pid_t tracee;
+int sock_fd = 0;
 
 uint8_t DEBUG = 0;
 
@@ -67,7 +67,7 @@ usage (char ** argv)
 static void
 version (char ** argv)
 {
-    printf("ztrace version %s, Kyle C. Hale (c) 2017\n", VERSION);
+    printf("ztrace version %s\n\nKyle C. Hale (c) 2017\n", VERSION);
 }
 
 
@@ -195,6 +195,78 @@ cleanup_msg (struct msghdr * msg)
 }
 
 
+static int
+ztrace_send_msg (zp_msg_type_t type, void * arg)
+{
+    struct msghdr* m = NULL;
+    zp_msg_t zpmsg;
+    zp_msg_t * resp;
+
+    memset(&zpmsg, 0, sizeof(zpmsg));
+
+    zpmsg.type = type;
+    zpmsg.arg  = arg;
+
+    /* TODO: doing this for every message is inefficient of course,
+     * we should reuse the buffers */
+    m = setup_nl_msg((void*)&zpmsg, sizeof(zpmsg));
+
+    if (!m) {
+        fprintf(stderr, "Could not setup netlink msg\n");
+        return -1;
+    }
+
+    /* off to the kernel */
+    sendmsg(sock_fd, m, 0);
+
+    DEBUG_PRINT("Waiting for response from kernel\n");
+
+    /* wait for the ack */
+    recvmsg(sock_fd, m, 0);
+
+    resp = (zp_msg_t*)NLMSG_DATA(m->msg_iov->iov_base);
+
+    if (resp->type != ZP_MSG_ACK) {
+        fprintf(stderr, "Received bad response from kernel (%d)\n", resp->type);
+        return -1;
+    } else {
+        DEBUG_PRINT("Received ACK from kernel\n");
+    }
+
+    cleanup_msg(m);
+
+    return 0;
+}
+
+
+static inline int
+ztrace_send_reg_msg (unsigned long addr)
+{
+    return ztrace_send_msg(ZP_MSG_REG, (void*)addr);
+}
+
+
+static inline int
+ztrace_send_init_msg (void)
+{
+    return ztrace_send_msg(ZP_MSG_INIT, NULL);
+}
+
+
+static inline int
+ztrace_send_ack_msg (void)
+{
+    return ztrace_send_msg(ZP_MSG_ACK, NULL);
+}
+
+
+static inline int
+ztrace_send_start_msg (int pid)
+{
+    return ztrace_send_msg(ZP_MSG_START, (void*)(uint64_t)pid);
+}
+
+
 static struct hashtable*
 find_all_zpages (int pid)
 {
@@ -226,7 +298,7 @@ find_all_zpages (int pid)
         return NULL;
     }
 
-    printf("Successfully scanned pages\n");
+    DEBUG_PRINT("Successfully scanned pages\n");
 
     for (int i = 0; i < npages; i++) {
         if (pi[i].flags.flags.ZERO_PAGE == 1) {
@@ -247,18 +319,19 @@ find_all_zpages (int pid)
             addr_t ret = v3_htable_insert(h, 
                                           (addr_t)zp->vaddr, 
                                           (addr_t)zp);
-
             if (!ret) {
                 fprintf(stderr, "Could not insert zero page entry into hashtable\n");
                 return NULL;
             }
 
-            /* KCH HERE */
+            /* notify the kmod of a page it needs to track */
+            DEBUG_PRINT("zero page mapping at %p\n", (void*)zp->vaddr);
+            ztrace_send_reg_msg((unsigned long)zp->vaddr);
             zeros++;
         }
     }
 
-    printf("Found %lu zero page references (%lu scanned)\n", zeros, npages);
+    DEBUG_PRINT("Found %lu zero page references on initial scan (%lu scanned)\n", zeros, npages);
 
     return h;
 }
@@ -269,6 +342,7 @@ die (int dontcare)
 {
     printf("User interrupt...detaching from child\n");
     ptrace(PTRACE_DETACH, tracee, 0, 0);
+    kill(0, SIGKILL);
     exit(-1);
 }
 
@@ -285,25 +359,26 @@ waitonit (int pid)
     pid_t pw = waitpid(pid, &status, 0);
 
     if (pw == (pid_t) -1) {
-        perror("issue waiting for tracee");
+        perror("ERROR: issue waiting for tracee");
         exit(1);
     }
 
-    if (WIFEXITED(status)) {
+
+    DEBUG_PRINT("Tracee got signal (%s)\n", strsignal(WSTOPSIG(status)));
+
+    /* continue if we hit SIGRAPs */
+    if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+        printf("continuing proc\n");
+        ptrace(PTRACE_CONT, pid, 0, 0);
+    } else if (WIFEXITED(status)) {
+        /* TODO: we should cleanup, notify kernel, and exit here */
         fprintf(stderr, "Child exited with status %d\n",
                 WEXITSTATUS(status));
-    }
-
-    DEBUG_PRINT("Tracee got signal (%d)\n", WSTOPSIG(status));
-
-    if (WSTOPSIG(status) != SIGSTOP) {
-        DEBUG_PRINT("passing signal along\n");
+    } else if (WSTOPSIG(status) == SIGKILL ||
+               WSTOPSIG(status) == SIGINT) {
+        // we're done here, but pass along the signal first
+        /* TODO: we should cleanup, notify kernel, and exit here */
         ptrace(PTRACE_SYSCALL, pid, NULL, WSTOPSIG(status));
-    }
-
-    if (WSTOPSIG(status) == SIGKILL ||
-        WSTOPSIG(status) == SIGINT) {
-        // we're done here
         printf("Child received signal, exiting.\n");
         exit(0);
     }
@@ -351,20 +426,19 @@ check_for_kmod (void)
 
 
     if (fread(fbuf, 1, sizeof(fbuf), fd) > 0) { // we have a module
-        DEBUG_PRINT("kzpage module detected\n");
+        DEBUG_PRINT("kztrace module detected\n");
         return;
     }
 
-    fprintf(stderr, "kzpage module is not loaded, make sure to insert it\n");
+    fprintf(stderr, "kztrace module is not loaded, make sure to insert it\n");
     exit(1);
 
 }
 
 
-static int
+static void
 setup_sock (void) 
 {
-    int sock_fd;
     struct sockaddr_nl src_addr, dst_addr;
 
     memset(&src_addr, 0, sizeof(src_addr));
@@ -379,70 +453,10 @@ setup_sock (void)
     sock_fd = socket(PF_NETLINK, SOCK_RAW, NETLINK_USER);
     if (sock_fd < 0) {
         fprintf(stderr, "Could not create Netlink socket\n");
-        return -1;
+        return;
     }
 
     bind(sock_fd, (struct sockaddr*)&src_addr, sizeof(src_addr));
-
-    return sock_fd;
-}
-
-
-static int
-ztrace_send_msg (int sock_fd, zp_msg_type_t type, void * arg)
-{
-    struct msghdr* m = NULL;
-    zp_msg_t zpmsg;
-    zp_msg_t * resp;
-
-    memset(&zpmsg, 0, sizeof(zpmsg));
-
-    zpmsg.type = type;
-    zpmsg.arg  = arg;
-
-    /* TODO: doing this for every message is inefficient of course,
-     * we should reuse the buffers */
-    m = setup_nl_msg((void*)&zpmsg, sizeof(zpmsg));
-
-    if (!m) {
-        fprintf(stderr, "Could not setup netlink msg\n");
-        return -1;
-    }
-
-    /* off to the kernel */
-    sendmsg(sock_fd, m, 0);
-
-    DEBUG_PRINT("Waiting for response from kernel\n");
-
-    /* wait for the ack */
-    recvmsg(sock_fd, m, 0);
-
-    resp = (zp_msg_t*)NLMSG_DATA(m->msg_iov->iov_base);
-
-    if (resp->type != ZP_MSG_ACK) {
-        fprintf(stderr, "Received bad response from kernel (%d)\n", resp->type);
-        return -1;
-    } else {
-        DEBUG_PRINT("Received ACK from kernel\n");
-    }
-
-    cleanup_msg(m);
-
-    return 0;
-}
-
-
-static inline int
-ztrace_send_init_msg (int sock_fd)
-{
-    return ztrace_send_msg(sock_fd, ZP_MSG_INIT, NULL);
-}
-
-
-static inline int
-ztrace_send_ack_msg (int sock_fd)
-{
-    return ztrace_send_msg(sock_fd, ZP_MSG_ACK, NULL);
 }
 
 
@@ -453,16 +467,29 @@ ztrace_send_ack_msg (int sock_fd)
  * off a new child and it will set itself up 
  * to be traced.
  *
+ * idx is the index of the first non-flag argument passed
+ * to *this* program, i.e. the name of the program 
+ * to trace
+ *
  */
 static int
-do_child (int argc, char ** argv)
+do_child (int argc, char ** argv, int idx)
 {
-    char * args[argc+1];
-    memcpy(args, argv, argc*sizeof(char*));
-    args[argc] = NULL; // marshalling for execvp
+    char * args[256];
+
+    memcpy(args, argv+idx, (argc-idx+1)*sizeof(char*));
+    args[(argc-idx+1)] = NULL; // marshalling for execvp
+
     ptrace(PTRACE_TRACEME); // we know we're about to be traced
+
     kill(getpid(), SIGSTOP); // the tracer can now just use waitpid on us
-    return execvp(args[0], args);
+
+    if (execvp(args[0], args) < 0) {
+        perror("ERROR: could not exec process");
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -472,8 +499,10 @@ do_trace (pid_t pid, int should_attach)
     struct hashtable *htable;
 
     if (should_attach) {
-        /* TODO: check return value */
-        force_trace(pid);
+        if (force_trace(pid) != 0) {
+            fprintf(stderr, "Could not trace target\n");
+            return -1;
+        }
     } 
 
     waitonit(pid);
@@ -489,12 +518,16 @@ do_trace (pid_t pid, int should_attach)
         exit(1);
     }
 
+    /* tell the kernel it's time to start listening */
+    ztrace_send_start_msg(pid);
+
     /* continue the process */
     cont(pid);
 
     /* let the thing go */
     while (1) {
         waitonit(pid);
+        cont(pid);
     }
 
     return 0;
@@ -505,7 +538,6 @@ int
 main (int argc, char * argv[])
 {
     pid_t pid;
-    int sock_fd;
     int pflag = 0;
     int hflag = 0;
     int vflag = 0;
@@ -522,7 +554,7 @@ main (int argc, char * argv[])
                 pid = atoi(optarg);
                 tracee = pid;
                 break;
-            case 'D':
+            case 'd':
                 DEBUG = 1;
                 break;
             case 'h':
@@ -544,8 +576,6 @@ main (int argc, char * argv[])
             }
     }
 
-    DEBUG_PRINT("hflag = %d, pflag = %d, dflag = %d, vflag = %d\n", hflag, pflag, DEBUG, vflag);
-
     if (hflag) {
         help(argv);
         exit(0);
@@ -559,19 +589,13 @@ main (int argc, char * argv[])
     /* make sure the kern module is loaded */
     check_for_kmod();
 
-    sock_fd = setup_sock();
-    if (sock_fd < 0) {
-        fprintf(stderr, "Could not setup socket\n");
-        return -1;
-    }
+    setup_sock();
 
-    if (ztrace_send_init_msg(sock_fd) != 0) {
+    if (ztrace_send_init_msg() != 0) {
         fprintf(stderr, "Could not send init msg\n");
         return -1;
     }
         
-    printf("Starting ztrace daemon (tracking pid %d)\n", pid);
-
     /* we need to fork a proc */
     if (!pflag) {
 
@@ -580,14 +604,14 @@ main (int argc, char * argv[])
         pid_t child = fork();
 
         if (child == 0) { 
-            return do_child(argc, argv);
+            return do_child(argc, argv, optind);
         } else {
-            return do_trace(child, 0);
+            return do_trace(child, 1);
         }
 
     } else {
 
-        DEBUG_PRINT("Tracing existing process (%d)\n", pid);
+        DEBUG_PRINT("Tracing existing process (pid=%d)\n", pid);
         return do_trace(pid, 1);
 
     }

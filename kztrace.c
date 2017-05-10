@@ -28,7 +28,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kyle C. Hale");
 MODULE_DESCRIPTION("Linux kernel module which catches mapping promotions from the zero page");
-MODULE_VERSION("0.1");
+MODULE_VERSION(VERSION);
 
 #define ERROR(fmt, args...) printk(KERN_ERR "KZTRACE: " fmt, ##args)
 #define DEBUG(fmt, args...) printk(KERN_DEBUG "KZTRACE: " fmt, ##args)
@@ -37,11 +37,13 @@ MODULE_VERSION("0.1");
 #define NETLINK_USER 31
 
 static struct sock *nl_sk = NULL;
-
+struct task_struct *target_task = NULL;
 
 /* 
  * this will be called when a pte changes in the target
  * process
+ *
+ * TODO: this should be generalized
  *
  */
 static void
@@ -50,34 +52,119 @@ kztrace_change_pte (struct mmu_notifier *mn,
                    unsigned long address,
                    pte_t pte)
 {
+    unsigned long zp_pa = virt_to_phys((volatile void*)empty_zero_page);
+
+    INFO("pte change for %p\n", (void*)address);
+
+    if (virt_to_phys((volatile void*)address) == zp_pa) {
+        INFO("Zpage detected in address\n");
+    }
+
+    if ((zp_pa & ~(1<<12)) == (pte.pte & ~(1<<12))) {
+        INFO("Zpage detected in pte\n");
+    }
+
 }
 
-static struct mmu_notifier_ops mmn_ops = {
-    .change_pte = kztrace_change_pte,
-};
+static void
+kztrace_invalidate_page (struct mmu_notifier *mn, 
+                         struct mm_struct *mm,
+                         unsigned long address)
+{
+    INFO("page invalidation for %p\n", (void*)address);
+}
+
+static void
+kztrace_release (struct mmu_notifier *mn,
+                 struct mm_struct *mm)
+{
+    INFO("release for mm notifier\n");
+
+    struct task_struct * t = mm->owner;
+
+    if (t) {
+        INFO("Release corresponds to pid %d\n", t->pid);
+    }
+}
+
+static int
+kztrace_clear_flush_young (struct mmu_notifier *mn,
+                           struct mm_struct *mm,
+                           unsigned long start,
+                           unsigned long end)
+{
+    INFO("clear flush young for %p-%p\n", (void*)start, (void*)end);
+    return 0;
+}
+
+static int
+kztrace_test_young (struct mmu_notifier *mn,
+                    struct mm_struct *mm,
+                    unsigned long address)
+{
+    INFO("test young for %p\n", (void*)address);
+    return 0;
+}
+
+
+static void
+kztrace_invalidate_range_start (struct mmu_notifier *mn,
+                                struct mm_struct *mm,
+                                unsigned long start,
+                                unsigned long end)
+{
+    INFO("invalidate (start) for range %p-%p\n", (void*)start, (void*)end);
+}
+
+static void
+kztrace_invalidate_range (struct mmu_notifier *mn,
+                          struct mm_struct *mm,
+                          unsigned long start, 
+                          unsigned long end)
+{
+    INFO("invalidate range %p-%p\n", (void*)start, (void*)end);
+}
+
+static void
+kztrace_invalidate_range_end (struct mmu_notifier *mn,
+                              struct mm_struct *mm,
+                              unsigned long start,
+                              unsigned long end)
+{
+    INFO("invalidate (end) for range %p-%p\n", (void*)start, (void*)end);
+}
 
 static struct mmu_notifier mmn;
+static struct mmu_notifier_ops mmn_ops = {
+    .change_pte             = kztrace_change_pte,
+    .invalidate_page        = kztrace_invalidate_page, 
+    .release                = kztrace_release,
+    .test_young             = kztrace_test_young,
+    .clear_flush_young      = kztrace_clear_flush_young,
+    .invalidate_range       = kztrace_invalidate_range,
+    .invalidate_range_start = kztrace_invalidate_range_start,
+    .invalidate_range_end   = kztrace_invalidate_range_end,
+};
 
 
 static int
 handle_start_msg (void * arg)
 {
-    struct task_struct * t = NULL;
     pid_t target_pid = (pid_t)(unsigned)(u64)arg;
 
-    DEBUG("Handling START message\n");
+    DEBUG("Handling START message for pid=%d\n", target_pid);
 
-    t = pid_task(find_vpid(target_pid), PIDTYPE_PID);
+    target_task = pid_task(find_vpid(target_pid), PIDTYPE_PID);
 
-    if (!t) {
+    if (!target_task) {
         ERROR("Could not get target PID for request\n");
         return -1;
     }
 
-    DEBUG("Registering MMU notifier and tracking PTE updates...\n");
+    DEBUG("Registering MMU notifier and tracking PTE updates: mm is at %p\n", (void*)target_task->mm);
 
     mmn.ops = &mmn_ops;
-    return mmu_notifier_register(&mmn, t->mm);
+    return mmu_notifier_register(&mmn, target_task->mm);
 }
 
 
@@ -100,7 +187,11 @@ handle_ack_msg (void * arg)
 static int 
 handle_reg_msg (void * arg)
 {
+    unsigned long zp_va = (unsigned long)arg;
+
     DEBUG("Handling REG message\n");
+
+
     return 0;
 }
 
@@ -109,6 +200,11 @@ static int
 handle_reset_msg (void * arg)
 {
     DEBUG("Handling RESET message\n");
+
+    DEBUG("Unregistering MMU notifier\n");
+    mmu_notifier_unregister(&mmn, target_task->mm);
+    target_task = NULL;
+
     return 0;
 }
 
@@ -149,8 +245,6 @@ kztrace_recv_msg (struct sk_buff *skb)
     zp_msg_t ack;
     ack.type = ZP_MSG_ACK;
 
-    DEBUG("Receiving message...\n");
-
     nlh = (struct nlmsghdr*)skb->data;
 
     if (handle_msg(nlmsg_data(nlh), nlmsg_len(nlh)) != 0) {
@@ -178,7 +272,7 @@ kztrace_recv_msg (struct sk_buff *skb)
         ERROR("Error while sending response to user\n");
     }
 
-    //nlmsg_free(skb_out);
+    // we don't need to free the skb, this will be taken care of for us
 }
 
 
