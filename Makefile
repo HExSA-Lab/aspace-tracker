@@ -25,6 +25,9 @@ pt_scan.o: pt_scan.c pt_scan.h
 test: test.c
 	$(CC) -Wno-unused-but-set-variable -Wall -o $@ $<
 
+test2: test2.c
+	$(CC) -Wno-unused-but-set-variable -Wall -o $@ $<
+
 kztrace.ko: kztrace.c
 	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) modules
 
