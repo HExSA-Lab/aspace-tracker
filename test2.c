@@ -22,6 +22,9 @@ int main () {
 
         printf("mapped page at %p\n", x);
 
+	// read the page
+	printf("x=%p\n", (void*)(*(unsigned long*)x));
+
         usleep(SLEEP_USEC);
 
         /* dirty the page */

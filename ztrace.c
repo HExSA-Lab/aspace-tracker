@@ -26,6 +26,9 @@
 #include "hashtable.h"
 
 
+#define TRACE_SHOULD_ATTACH 1
+#define TRACE_NO_ATTACH     0
+
 pid_t tracee;
 int sock_fd = 0;
 
@@ -606,13 +609,13 @@ main (int argc, char * argv[])
         if (child == 0) { 
             return do_child(argc, argv, optind);
         } else {
-            return do_trace(child, 1);
+            return do_trace(child, TRACE_SHOULD_ATTACH);
         }
 
     } else {
 
         DEBUG_PRINT("Tracing existing process (pid=%d)\n", pid);
-        return do_trace(pid, 1);
+        return do_trace(pid, TRACE_SHOULD_ATTACH);
 
     }
 

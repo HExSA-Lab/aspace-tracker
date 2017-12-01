@@ -8,9 +8,13 @@
  * a client program can request page updates (specifically
  * for zero pages)
  *
+ * Original source: https://lwn.net/Articles/266320/
+ * Changes as of 4.13: https://lwn.net/Articles/732952/
+ *
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
@@ -66,6 +70,16 @@ kztrace_change_pte (struct mmu_notifier *mn,
 
 }
 
+
+/*
+ * can be invoked after the page-table entry for the page at address in the
+ * address space indicated by mm has been removed, but while the page itself
+ * still exists. 
+ *
+ * NOTE: NOT allowed to sleep
+ */
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
 static void
 kztrace_invalidate_page (struct mmu_notifier *mn, 
                          struct mm_struct *mm,
@@ -73,14 +87,15 @@ kztrace_invalidate_page (struct mmu_notifier *mn,
 {
     INFO("page invalidation for %p\n", (void*)address);
 }
+#endif
 
 static void
 kztrace_release (struct mmu_notifier *mn,
                  struct mm_struct *mm)
 {
-    INFO("release for mm notifier\n");
-
     struct task_struct * t = mm->owner;
+
+    INFO("release for mm notifier\n");
 
     if (t) {
         INFO("Release corresponds to pid %d\n", t->pid);
@@ -107,6 +122,15 @@ kztrace_test_young (struct mmu_notifier *mn,
 }
 
 
+/*
+In this case, invalidate_range_start() is called while all pages in the
+affected range are still mapped; no more mappings for pages in the region
+should be added in the secondary MMU after the call. When the unmapping is
+complete and the pages have been freed, invalidate_range_end() is called to
+allow any necessary cleanup to be done.
+
+NOTE: allowed to sleep
+*/
 static void
 kztrace_invalidate_range_start (struct mmu_notifier *mn,
                                 struct mm_struct *mm,
@@ -116,6 +140,15 @@ kztrace_invalidate_range_start (struct mmu_notifier *mn,
     INFO("invalidate (start) for range %p-%p\n", (void*)start, (void*)end);
 }
 
+/*
+This callback is invoked when a range of pages is actually being unmapped. It
+can be called between calls to invalidate_range_start() and
+invalidate_range_end(), but it can also be called independently of them in some
+situations. One might wonder why both invalidate_page() and invalidate_range()
+exist and, indeed, that is where the trouble started.
+
+NOTE: NOT allowed to sleep
+*/
 static void
 kztrace_invalidate_range (struct mmu_notifier *mn,
                           struct mm_struct *mm,
@@ -125,6 +158,9 @@ kztrace_invalidate_range (struct mmu_notifier *mn,
     INFO("invalidate range %p-%p\n", (void*)start, (void*)end);
 }
 
+/*
+ * NOTE: allowed to sleep
+ */
 static void
 kztrace_invalidate_range_end (struct mmu_notifier *mn,
                               struct mm_struct *mm,
@@ -134,10 +170,13 @@ kztrace_invalidate_range_end (struct mmu_notifier *mn,
     INFO("invalidate (end) for range %p-%p\n", (void*)start, (void*)end);
 }
 
+// KCH NOTE: semantics of notifiers changes at 4.13
 static struct mmu_notifier mmn;
 static struct mmu_notifier_ops mmn_ops = {
     .change_pte             = kztrace_change_pte,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
     .invalidate_page        = kztrace_invalidate_page, 
+#endif
     .release                = kztrace_release,
     .test_young             = kztrace_test_young,
     .clear_flush_young      = kztrace_clear_flush_young,
@@ -189,8 +228,7 @@ handle_reg_msg (void * arg)
 {
     unsigned long zp_va = (unsigned long)arg;
 
-    DEBUG("Handling REG message\n");
-
+    DEBUG("Handling REG message for ZPVA=%p\n", (void*)zp_va);
 
     return 0;
 }
