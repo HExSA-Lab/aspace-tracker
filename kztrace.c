@@ -43,6 +43,7 @@ MODULE_VERSION(VERSION);
 static struct sock *nl_sk = NULL;
 struct task_struct *target_task = NULL;
 
+
 /* 
  * this will be called when a pte changes in the target
  * process
@@ -100,6 +101,8 @@ kztrace_release (struct mmu_notifier *mn,
     if (t) {
         INFO("Release corresponds to pid %d\n", t->pid);
     }
+
+    //mmu_notifier_unregister(&mmn, target_task->mm);
 }
 
 static int
@@ -239,9 +242,14 @@ handle_reset_msg (void * arg)
 {
     DEBUG("Handling RESET message\n");
 
-    DEBUG("Unregistering MMU notifier\n");
-    mmu_notifier_unregister(&mmn, target_task->mm);
-    target_task = NULL;
+    DEBUG("Unregistering MMU notifier (target_task=%p)\n", (void*)target_task);
+    if (target_task) {
+        target_task = NULL;
+    } else {
+        ERROR("Could not unregister notifier (task is NULL)\n");
+        return -1;
+    }
+
 
     return 0;
 }

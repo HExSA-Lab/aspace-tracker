@@ -68,7 +68,9 @@ struct mmap_entry {
     uint64_t          flags;
 } ;
 
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
+#endif
 
 
 // input: num_pages = number of available slots

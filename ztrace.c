@@ -19,6 +19,9 @@
 #include <sys/mman.h>
 #include <sys/ptrace.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/reg.h>
+#include <sys/user.h>
 #include <linux/netlink.h>
 
 #include "kzparms.h"
@@ -269,6 +272,12 @@ ztrace_send_start_msg (int pid)
     return ztrace_send_msg(ZP_MSG_START, (void*)(uint64_t)pid);
 }
 
+static inline int
+ztrace_send_reset_msg (void)
+{
+    return ztrace_send_msg(ZP_MSG_RESET, NULL);
+}
+
 
 static struct hashtable*
 find_all_zpages (int pid)
@@ -344,6 +353,7 @@ static void
 die (int dontcare)
 {
     printf("User interrupt...detaching from child\n");
+    ztrace_send_reset_msg();
     ptrace(PTRACE_DETACH, tracee, 0, 0);
     kill(0, SIGKILL);
     exit(-1);
@@ -351,9 +361,9 @@ die (int dontcare)
 
 
 /*
- * waits for tracee to change state. Returns when it does, will
- * die if child exits
- *
+ * waits for tracee to change state. 
+ * Returns when it does, will
+ * die if child exits.
  */
 static void
 waitonit (int pid)
@@ -371,22 +381,72 @@ waitonit (int pid)
 
     /* continue if we hit SIGRAPs */
     if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
-        printf("continuing proc\n");
         ptrace(PTRACE_CONT, pid, 0, 0);
     } else if (WIFEXITED(status)) {
-        /* TODO: we should cleanup, notify kernel, and exit here */
+        ztrace_send_reset_msg();
         fprintf(stderr, "Child exited with status %d\n",
                 WEXITSTATUS(status));
+        exit(0);
     } else if (WSTOPSIG(status) == SIGKILL ||
                WSTOPSIG(status) == SIGINT) {
         // we're done here, but pass along the signal first
-        /* TODO: we should cleanup, notify kernel, and exit here */
+        ztrace_send_reset_msg();
         ptrace(PTRACE_SYSCALL, pid, NULL, WSTOPSIG(status));
-        printf("Child received signal, exiting.\n");
+        printf("Child received interrupt, exiting.\n");
         exit(0);
     }
         
 }
+
+/*
+ * this waits for a forked child to finish its execvp
+ * sequence so that we can track the correct mm 
+ * struct on the kernel side.
+ */
+static void
+wait_for_exec_completion (int pid)
+{
+    int status = 0;
+    uint64_t snum;
+    int entering = 1;
+    struct user_regs_struct regs;
+
+    
+    printf("waiting for an exec\n");
+    while (1) {
+
+        ptrace(PTRACE_SYSCALL, pid, 0, 0);
+
+        waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status)) {
+            printf("exiting in syscall wait\n");
+            break;
+        }
+
+        ptrace(PTRACE_GETREGS, pid, 0, &regs);
+
+        snum = regs.orig_rax;
+
+        if (snum == SYS_execve) {
+            break;
+
+#if 0
+            if (entering) {
+                printf("child entering execve\n");
+                entering = 0;
+                break;
+            } else {
+                printf("child exiting execve\n");
+                entering = 1;
+                break;
+            }
+#endif
+
+        }
+    }
+}
+
 
 
 static void
@@ -485,7 +545,7 @@ do_child (int argc, char ** argv, int idx)
 
     ptrace(PTRACE_TRACEME); // we know we're about to be traced
 
-    kill(getpid(), SIGSTOP); // the tracer can now just use waitpid on us
+    //kill(getpid(), SIGSTOP); // the tracer can now just use waitpid on us
 
     if (execvp(args[0], args) < 0) {
         perror("ERROR: could not exec process");
@@ -501,14 +561,29 @@ do_trace (pid_t pid, int should_attach)
 {
     struct hashtable *htable;
 
+    /* 
+     * if we're not tracing a forked process, 
+     * we can simply attach to the proc and wait 
+     * for it to stop.
+     */
     if (should_attach) {
         if (force_trace(pid) != 0) {
             fprintf(stderr, "Could not trace target\n");
             return -1;
         }
-    } 
 
-    waitonit(pid);
+        waitonit(pid);
+
+    } else {
+        /* 
+         * otherwise, we need to wait until the forked 
+         * proc is finished with since otherwise we'll 
+         * be asking the kernel to watch the wrong mm 
+         * struct when we send the start msg.
+         */
+         wait_for_exec_completion(pid);
+    }
+
 
     /* we should detach if we die */
     signal(SIGINT, die);
