@@ -684,7 +684,7 @@ main (int argc, char * argv[])
         if (child == 0) { 
             return do_child(argc, argv, optind);
         } else {
-            return do_trace(child, TRACE_SHOULD_ATTACH);
+            return do_trace(child, TRACE_NO_ATTACH);
         }
 
     } else {
