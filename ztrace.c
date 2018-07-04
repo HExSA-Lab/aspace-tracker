@@ -23,19 +23,22 @@
 #include <sys/reg.h>
 #include <sys/user.h>
 #include <linux/netlink.h>
-
+//#include <linux/uaccess.h>
+//#include <asm-generic/uaccess.h>
+#include <errno.h>
 #include "kzparms.h"
 #include "pt_scan.h"
 #include "hashtable.h"
 
 
+#define MAX_NUM_PT_ENTRIES 600000
 #define TRACE_SHOULD_ATTACH 1
 #define TRACE_NO_ATTACH     0
 
 pid_t tracee;
 int sock_fd = 0;
 
-uint8_t DEBUG = 0;
+uint8_t DEBUG = 1;
 
 #define DEBUG_PRINT(fmt, args...) \
     if (DEBUG) { \
@@ -129,7 +132,7 @@ setup_nl_msg (void *data, int len)
 
     memset(&dst, 0, sizeof(dst));
     dst.nl_family = AF_NETLINK;
-    dst.nl_pid    = 0; // sending to kernel
+    dst.nl_pid    = 0; // sending to process
     dst.nl_groups = 0; // unicast
 
     if (len > MAX_PAYLOAD) {
@@ -200,18 +203,17 @@ cleanup_msg (struct msghdr * msg)
     free(msg);
 }
 
-
 static int
 ztrace_send_msg (zp_msg_type_t type, void * arg)
 {
     struct msghdr* m = NULL;
     zp_msg_t zpmsg;
     zp_msg_t * resp;
-
+       
     memset(&zpmsg, 0, sizeof(zpmsg));
-
+    
+    zpmsg.arg = arg;
     zpmsg.type = type;
-    zpmsg.arg  = arg;
 
     /* TODO: doing this for every message is inefficient of course,
      * we should reuse the buffers */
@@ -225,22 +227,17 @@ ztrace_send_msg (zp_msg_type_t type, void * arg)
     /* off to the kernel */
     sendmsg(sock_fd, m, 0);
 
-    DEBUG_PRINT("Waiting for response from kernel\n");
-
     /* wait for the ack */
     recvmsg(sock_fd, m, 0);
-
+    
     resp = (zp_msg_t*)NLMSG_DATA(m->msg_iov->iov_base);
-
+    
     if (resp->type != ZP_MSG_ACK) {
         fprintf(stderr, "Received bad response from kernel (%d)\n", resp->type);
         return -1;
-    } else {
-        DEBUG_PRINT("Received ACK from kernel\n");
     }
 
     cleanup_msg(m);
-
     return 0;
 }
 
@@ -265,11 +262,42 @@ ztrace_send_ack_msg (void)
     return ztrace_send_msg(ZP_MSG_ACK, NULL);
 }
 
-
 static inline int
 ztrace_send_start_msg (int pid)
 {
-    return ztrace_send_msg(ZP_MSG_START, (void*)(uint64_t)pid);
+    int buff_size = MAX_NUM_PT_ENTRIES * sizeof(pt_data);
+    pt_data *buff = (pt_data*) malloc(buff_size);
+
+    if(buff ==NULL){
+        fprintf(stderr, "could not create buffer");
+        return -1 ;
+    }
+    memset(buff, 0, buff_size);
+
+    struct start_msg_arg *arg = (struct start_msg_arg*)malloc(sizeof(struct start_msg_arg));  
+    arg->pid = (void*)(uint64_t)pid;
+    arg->buff = (void*)buff;
+
+    int send_ret_val = 0;
+    send_ret_val = ztrace_send_msg(ZP_MSG_START, (void*)arg);
+    if(send_ret_val < 0){
+        return send_ret_val;
+    }
+
+    //TODO:need to move this out of here
+    int j;
+    FILE *fp = fopen("testoutput.txt","w");
+    for (j=0;j<MAX_NUM_PT_ENTRIES;j++) {
+        if(buff[j].va == 0){
+            DEBUG_PRINT("j-%d entries retrieved\n",j);
+            fprintf(fp,"total %d \n",j);
+            break;
+        }
+
+        fprintf(fp,"va %lx pa %lx \n",buff[j].va,buff[j].pa);
+     }
+     fclose(fp);
+     return 0;
 }
 
 static inline int
@@ -408,7 +436,6 @@ wait_for_exec_completion (int pid)
 {
     int status = 0;
     uint64_t snum;
-    int entering = 1;
     struct user_regs_struct regs;
 
     
